@@ -149,7 +149,7 @@ class Cull(Reduce):
             pass
         
         # Rebuild Tags
-        document = [
+        document["tags"] = [
             {"name": tag}
             for tag in set(
                 tag
