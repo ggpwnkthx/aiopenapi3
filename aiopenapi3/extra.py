@@ -147,6 +147,19 @@ class Cull(Reduce):
         # Update references in the document
         while self._update_references(ctx.document, document):
             pass
+        
+        # Rebuild Tags
+        document = [
+            {"name": tag}
+            for tag in set(
+                tag
+                for operations in ctx.document.get("paths", {}).values()
+                for details in operations.values()
+                if isinstance(details, dict)
+                for tag in details.get("tags", [])
+            )
+        ]
 
         ctx.document = document
+        
         return ctx
