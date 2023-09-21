@@ -147,7 +147,7 @@ class Cull(Reduce):
         # Update references in the document
         while self._update_references(ctx.document, document):
             pass
-        
+
         # Rebuild Tags
         document["tags"] = [
             {"name": tag}
@@ -161,5 +161,5 @@ class Cull(Reduce):
         ]
 
         ctx.document = document
-        
+
         return ctx
