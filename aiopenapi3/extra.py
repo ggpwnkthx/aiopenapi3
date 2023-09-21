@@ -158,7 +158,7 @@ class Cull(Reduce):
                 for tag in details.get("tags", [])
             )
         )
-        document["tags"] = [tag for tag in ctx.document.get("tags") if tag["name"] in tag_names]
+        document["tags"] = [tag for tag in ctx.document.get("tags", []) if tag["name"] in tag_names]
 
         ctx.document = document
 
