@@ -360,6 +360,13 @@ class OperationIndex:
             return self._api._createRequest(self._api, method, path, op)
         else:
             raise KeyError(f"operationId {item} not found in tags or operations")
+    
+    def __getitem__(self, item: Union[str, Tuple]):
+        """
+        index operator interface
+        access operations by operationId or (path, method)
+        """
+        return getattr(self, item) if isinstance(item, str) else self._api.createRequest(item)
 
     def __iter__(self):
         return self.Iter(self._root, self._use_operation_tags)
