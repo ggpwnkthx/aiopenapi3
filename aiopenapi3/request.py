@@ -360,7 +360,7 @@ class OperationIndex:
             return self._api._createRequest(self._api, method, path, op)
         else:
             raise KeyError(f"operationId {item} not found in tags or operations")
-    
+
     def __getitem__(self, item: Union[str, Tuple]):
         """
         index operator interface
