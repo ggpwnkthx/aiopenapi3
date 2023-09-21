@@ -149,16 +149,16 @@ class Cull(Reduce):
             pass
 
         # Rebuild Tags
-        document["tags"] = [
-            {"name": tag}
-            for tag in set(
+        tag_names = list(
+            set(
                 tag
-                for operations in ctx.document.get("paths", {}).values()
+                for operations in document.get("paths", {}).values()
                 for details in operations.values()
                 if isinstance(details, dict)
                 for tag in details.get("tags", [])
             )
-        ]
+        )
+        document["tags"] = [tag for tag in ctx.document.get("tags") if tag["name"] in tag_names]
 
         ctx.document = document
 
