@@ -157,6 +157,32 @@ and
 :aioai3:ref:`the unit tests <tests.pathv20_test.test_paths_parameter_format_v20>`.
 
 
+ServerVariables
+===============
+
+An example build upon the `Swagger example <https://swagger.io/docs/specification/api-host-and-base-path/>`_.
+
+.. code:: yaml
+
+    openapi: 3.0.4
+    servers:
+      - url: 'https://{host}.example.org/petstore/
+          host:
+            enum:
+              - sandbox
+              - api
+            default: sandbox
+
+
+Currently there is not public API except accessing OpenAPi._server_variables directly.
+
+
+.. code:: python
+
+    api._server_variables = {"host":"api"}
+    api._.createPet(pet)
+
+
 
 Manual Requests
 ===============

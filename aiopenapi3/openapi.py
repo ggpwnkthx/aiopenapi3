@@ -6,6 +6,7 @@ import inspect
 import logging
 import copy
 import pickle
+import random
 
 if sys.version_info >= (3, 9):
     import pathlib
@@ -39,7 +40,16 @@ from .request import RequestBase
 from .v30.paths import Operation
 
 if typing.TYPE_CHECKING:
-    from ._types import RootType, JSON, PathItemType, SchemaType, OperationType, ReferenceType, RequestType
+    from ._types import (
+        RootType,
+        JSON,
+        PathItemType,
+        SchemaType,
+        OperationType,
+        ReferenceType,
+        RequestType,
+        HTTPMethodType,
+    )
 
 
 def has_components(y: Optional["RootType"]) -> TypeGuard[Union[v30.Root, v31.Root]]:
@@ -238,7 +248,9 @@ class OpenAPI:
         Loader - loading referenced documents
         """
 
-        self._createRequest: Callable[["OpenAPI", str, str, "OperationType"], "RequestBase"]
+        self._createRequest: Callable[
+            ["OpenAPI", str, str, "OperationType", Optional[List["ServerType"]]], "RequestBase"
+        ]
         """
         creates the Async/Request for the protocol required
         """
@@ -258,6 +270,13 @@ class OpenAPI:
         """
         the related documents
         """
+
+        self._server_variables: Dict[str, str] = dict()
+        """
+        server variable mapping
+        """
+
+        self._server_select: Callable[[List["ServerType"]], "ServerType"] = random.choice
 
         self._init_plugins(plugins)
         """
@@ -358,7 +377,9 @@ class OpenAPI:
 
         elif isinstance(self._root, (v30.Root, v31.Root)):
             allschemas = [
-                x.components.schemas for x in filter(has_components, self._documents.values()) if x.components.schemas
+                x.components.schemas
+                for x in filter(has_components, self._documents.values())
+                if x.components is not None and isinstance(x.components.schemas, SchemaBase)
             ]
 
             for schemas in allschemas:
@@ -460,7 +481,7 @@ class OpenAPI:
                 # PathItems
                 for path, obj in (self.paths or dict()).items():
                     for m in obj.model_fields_set & HTTP_METHODS:
-                        op = getattr(obj, m)
+                        op: Operation = getattr(obj, m)
 
                         for r, response in op.responses.items():
                             if isinstance(response, ReferenceBase):
@@ -482,7 +503,7 @@ class OpenAPI:
         elif isinstance(self._root, (v30.Root, v31.Root)):
             # Schema
             documents = cast(Union[List[v30.Root], List[v31.Root]], self._documents.values())
-            components = [x.components for x in filter(has_components, documents)]
+            components = [x.components for x in filter(has_components, documents) if x.components is not None]
             assert components is not None
             if only_required is False:
                 for byid in map(lambda x: x.schemas, components):
@@ -501,32 +522,35 @@ class OpenAPI:
                                 schema = parameter.schema_._target
                             else:
                                 schema = parameter.schema_
+                            assert schema is not None
                             name = schema._get_identity("I2", f"{path}.{m}.{parameter.name}")
                             byname[name] = schema
                         else:
-                            for key, mediatype in parameter.content.items():
-                                schema = mediatype.schema_
+                            for key, mto in parameter.content.items():
+                                if isinstance(mto.schema_, ReferenceBase):
+                                    schema = mto.schema_._target
+                                else:
+                                    schema = mto.schema_
+                                assert schema is not None
                                 name = schema._get_identity("I2", f"{path}.{m}.{parameter.name}.{key}")
                                 byname[name] = schema
-                            raise NotImplementedError("https://github.com/commonism/aiopenapi3/issues/163")
 
                     if op.requestBody:
-                        for content_type, request in op.requestBody.content.items():
-                            if request.schema_ is None:
+                        for mt, mto in op.requestBody.content.items():
+                            if mto.schema_ is None:
                                 continue
-                            byname[request.schema_._get_identity("B")] = request.schema_
+                            byname[mto.schema_._get_identity("B")] = mto.schema_
 
                     for r, response in op.responses.items():
                         if isinstance(response, ReferenceBase):
                             response = response._target
                         if isinstance(response, (v30.paths.Response, v31.paths.Response)):
                             assert response.content is not None
-                            for c, content in response.content.items():
-                                if content.schema_ is None:
+                            for mt, mto in response.content.items():
+                                if mto.schema_ is None:
                                     continue
-                                if isinstance(content.schema_, (v30.Schema, v31.Schema)):
-                                    name = content.schema_._get_identity("I2", f"{path}.{m}.{r}.{c}")
-                                    byname[name] = content.schema_
+                                name = mto.schema_._get_identity("I2", f"{path}.{m}.{r}.{mt}")
+                                byname[name] = mto.schema_
                         else:
                             raise TypeError(f"{type(response)} at {path}")
 
@@ -535,10 +559,10 @@ class OpenAPI:
                 for responses in map(lambda x: x.responses, components):
                     assert responses is not None
                     for rname, response in responses.items():
-                        for content_type, media_type in response.content.items():
-                            if media_type.schema_ is None:
+                        for mt, mto in response.content.items():
+                            if mto.schema_ is None:
                                 continue
-                            byname[media_type.schema_._get_identity("R")] = media_type.schema_
+                            byname[mto.schema_._get_identity("R")] = mto.schema_
 
         byname = self.plugins.init.schemas(initialized=self._root, schemas=byname).schemas
         return byname
@@ -549,6 +573,14 @@ class OpenAPI:
         data: Set[int] = set(byid.keys())
         todo: Set[int] = self._iterate_schemas(byid, data, set())
         types: Dict[str, Union[ForwardRef, Type[BaseModel], Type[int], Type[str], Type[float], Type[bool]]] = dict()
+
+        """
+        Due to Plugins (e.g. Cull/Reduce) byname may be incomplete
+        """
+        resolved: List["SchemaType"] = list(
+            map(lambda x: byid[x]._target if isinstance(byid[x], ReferenceBase) else byid[x], todo | data)
+        )
+        self.plugins.init.resolved(initialized=self._root, resolved=resolved)
 
         # print(f"{len(todo | data)} {only_required=}")
         for i in todo | data:
@@ -573,7 +605,7 @@ class OpenAPI:
                 raise e
 
     @property
-    def url(self):
+    def url(self) -> yarl.URL:
         if isinstance(self._root, v20.Root):
             base = yarl.URL(self._base_url)
             scheme = host = port = path = None
@@ -587,8 +619,8 @@ class OpenAPI:
                 scheme = base.scheme
 
             if self._root.host:
-                host, _, port = self._root.host.partition(":")
-                port = None if port == "" else port
+                v = yarl.URL(f"{scheme}://{self._root.host}")
+                host, port = v.host, v.explicit_port
             else:
                 host, port = base.host, base.port
 
@@ -597,7 +629,8 @@ class OpenAPI:
             r = yarl.URL.build(scheme=scheme, host=host, port=port, path=path)
             return r
         elif isinstance(self._root, (v30.Root, v31.Root)):
-            return self._base_url.join(yarl.URL(self._root.servers[0].url))
+            server: "ServerType" = self._server_select(self._root.servers)
+            return self._base_url.join(yarl.URL(server.createUrl(self._server_variables)))
 
     def authenticate(self, *args, **kwargs):
         """
@@ -651,7 +684,7 @@ class OpenAPI:
         """
         return self._operationindex
 
-    def createRequest(self, operationId: Union[str, Tuple[str, str]]) -> "RequestType":
+    def createRequest(self, operationId: Union[str, Tuple[str, "HTTPMethodType"]]) -> "RequestType":
         """
         create a Request
 
@@ -671,7 +704,7 @@ class OpenAPI:
                 opi: OperationIndex = self._operationindex
                 for i in tags:
                     opi = getattr(opi, i)
-                _, _, operation = opi._operations[opn]
+                _, _, operation, _ = opi._operations[opn]
                 request = getattr(opi, opn)
                 assert isinstance(request, aiopenapi3.request.RequestBase)
             else:
@@ -679,9 +712,17 @@ class OpenAPI:
                 pathitem = self._root.paths[path]
                 if pathitem.ref:
                     pathitem = pathitem.ref._target
+
                 operation = getattr(pathitem, method)
                 assert operation is not None
-                request = self._createRequest(self, method, path, operation)
+                if isinstance(self._root, v20.Root):
+                    servers = None
+                elif isinstance(self._root, (v30.Root, v31.Root)):
+                    servers = operation.servers or pathitem.servers or self.servers
+                else:
+                    raise TypeError(self._root)
+                request = self._createRequest(self, method, path, operation, servers)
+            assert request is not None
             return request
         except Exception as e:
             raise aiopenapi3.errors.RequestError(operation, request, None, {}) from e
@@ -713,7 +754,18 @@ class OpenAPI:
             root = self._documents[url]
 
         try:
-            return root.resolve_jp(jp)
+            while True:
+                r = root.resolve_jp(jp)
+                if isinstance(r, ReferenceBase):
+                    """
+                    returned node is a unresolved reference
+                    resolve & retry
+                    """
+                    v = root.resolve_jp(r.ref)
+                    if not isinstance(v, ReferenceBase) or v.ref == r.ref:
+                        return r
+                    continue
+                return r
         except ReferenceResolutionError as e:
             # add metadata to the error
             e.element = obj

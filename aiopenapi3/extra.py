@@ -1,8 +1,15 @@
+import typing
 from typing import List, Union, Optional, Tuple
 import logging
 import re
 
 from .plugin import Document, Init
+
+if typing.TYPE_CHECKING:
+    from ._types import HTTPMethodMatchType
+
+    PathMatchType = Union[re.Pattern, str]
+    OperationIdMatchType = Union[re.Pattern, str]
 
 
 class Reduce(Document, Init):
@@ -14,16 +21,20 @@ class Reduce(Document, Init):
 
     def __init__(
         self,
-        *operations: List[
-            Union[Tuple[Union[re.Pattern, str], Optional[List[Union[re.Pattern, str]]]], Union[re.Pattern, str]]
-        ],
+        *operations: List[Union[Tuple["PathMatchType", Optional[List["HTTPMethodMatchType"]]], "OperationIdMatchType"]],
     ) -> None:
+        """
+
+        :param operations: the operation selector
+        """
         assert isinstance(operations, (list, tuple)), type(operations)
         self.operations = operations
         super().__init__()
 
     def _reduced_paths(self, ctx: "Document.Context") -> dict:
         reduced = {}
+        if "paths" not in ctx.document:
+            return reduced
         keep_keys = {"summary", "description", "servers", "parameters"}
         for operation in self.operations:
             if isinstance(operation, (str, re.Pattern)):
@@ -72,6 +83,8 @@ class Reduce(Document, Init):
 
     def initialized(self, ctx: "Init.Context") -> "Init.Context":
         """Process the initialized context."""
+        assert ctx.initialized is not None
+
         for name, parameter in list(ctx.initialized.components.parameters.items()):
             if parameter.schema_._model_type is None:
                 del ctx.initialized.components.parameters[name]

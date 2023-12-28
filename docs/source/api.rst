@@ -20,7 +20,7 @@ Requests
 Requests encapsulate the required information to call an operation.
 They
 
-    - compile the actual HTTP request sent, including authentication information, headers, parameters and the body.
+    - compile the actual HTTP request to be sent, including authentication information, path, headers, parameters and the body.
     - send it
     - receive the result
     - process it
@@ -28,11 +28,11 @@ They
 
 .. currentmodule:: aiopenapi3.request
 .. autoclass:: RequestBase
-    :members: data, parameters, request, stream, __call__
+    :members: data, parameters, request, stream, __call__, operation, root
 
 .. currentmodule:: aiopenapi3.request
 .. autoclass:: AsyncRequestBase
-    :members: data, parameters, request, stream, __call__
+    :members: data, parameters, request, stream, __call__, operation, root
 
 
 The different major versions of the OpenAPI protocol require their own Request/AsyncRequest.
@@ -44,6 +44,13 @@ The different major versions of the OpenAPI protocol require their own Request/A
 .. autoclass:: aiopenapi3.v30.glue.Request
 
 .. autoclass:: aiopenapi3.v30.glue.AsyncRequest
+
+
+OperationIndex
+==============
+.. currentmodule:: aiopenapi3.request
+.. autoclass:: OperationIndex
+    :members: __getattr__, __getitem__
 
 
 Parameters
@@ -358,10 +365,12 @@ Code below will eleminate all schemas not required to serve the operations ident
     api = OpenAPI.load_sync(
         "http://127.0.0.1/api.yaml",
         plugins=[
-            Cull({
-                re.compile(r"/this/.*"): None,
-                "/and/this":["get"]
-            })
+            Cull(
+                "getPetById",
+                re.compile(r".*Pet.*"),
+                ("/logout", ["get"]),
+                (re.compile(r"^/user.*"), ["post"]),
+            )
         ],
     )
 

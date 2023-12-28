@@ -2,6 +2,7 @@
 This file tests that paths are parsed and populated correctly
 """
 import base64
+import copy
 import uuid
 import pathlib
 
@@ -168,9 +169,10 @@ def test_paths_security(httpx_mock, with_paths_security):
     request = httpx_mock.get_requests()[-1]
     assert request.headers["Authorization"] == "Bearer %s" % (auth,)
 
-    # null session
+    # null session - via empty Operation Security
     api.authenticate(None)
-    api._.api_v1_auth_login_info(data={}, parameters={})
+    r = api._.api_v1_auth_login_null()
+    request = httpx_mock.get_requests()[-1]
 
 
 def test_paths_security_combined(httpx_mock, with_paths_security):
@@ -348,9 +350,13 @@ def test_paths_parameter_format(httpx_mock, with_paths_parameter_format):
     return
 
 
-@pytest.mark.xfail(raises=NotImplementedError, reason="https://github.com/commonism/aiopenapi3/issues/163")
 def test_paths_parameter_format_complex(httpx_mock, with_paths_parameter_format_complex):
-    OpenAPI(URLBASE, with_paths_parameter_format_complex, session_factory=httpx.Client)
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, json="test")
+
+    api = OpenAPI(URLBASE, with_paths_parameter_format_complex, session_factory=httpx.Client)
+    r = api._.get()
+    r = api._.get(parameters={"value": 5})
+    assert r
 
 
 def test_paths_response_header(httpx_mock, with_paths_response_header):
@@ -442,6 +448,32 @@ def test_paths_response_status_pattern_default(httpx_mock, with_paths_response_s
         api._.test()
 
 
+def test_paths_response_error(httpx_mock, with_paths_response_error):
+    from aiopenapi3 import ResponseSchemaError, ContentTypeError, HTTPStatusError, ResponseDecodingError
+
+    api = OpenAPI("/", with_paths_response_error, session_factory=httpx.Client)
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=200, json="ok")
+    r = api._.test()
+    assert r == "ok"
+
+    httpx_mock.add_response(headers={"Content-Type": "text/html"}, status_code=200, json="ok")
+    with pytest.raises(ContentTypeError):
+        api._.test()
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=201, json="ok")
+    with pytest.raises(HTTPStatusError):
+        api._.test()
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=200, content="'")
+    with pytest.raises(ResponseDecodingError):
+        api._.test()
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=200, json="fail")
+    with pytest.raises(ResponseSchemaError):
+        api._.test()
+
+
 def test_paths_request_calling(httpx_mock, with_paths_response_status_pattern_default):
     api = OpenAPI("/", with_paths_response_status_pattern_default, session_factory=httpx.Client)
 
@@ -465,3 +497,63 @@ def test_paths_request_calling(httpx_mock, with_paths_response_status_pattern_de
     req = api._[(path, method)]
     r = req()
     assert r == "created"
+
+
+def test_paths_servers(httpx_mock, with_paths_servers):
+    api = OpenAPI("/", with_paths_servers, session_factory=httpx.Client)
+    assert api.url.host == "servers"
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=200, json="'ok'")
+    r = api._.servers()
+    request = httpx_mock.get_requests()[-1]
+    assert request.url.host == "servers"
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=204)
+    r = api._.path()
+    request = httpx_mock.get_requests()[-1]
+    assert request.url.host == "path"
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=200, json="'ok'")
+    r = api._.operation()
+    request = httpx_mock.get_requests()[-1]
+    assert request.url.host == "operation"
+
+    return
+
+
+def test_paths_server_variables(httpx_mock, with_paths_server_variables):
+    api = OpenAPI("http://example/openapi.yaml", with_paths_server_variables, session_factory=httpx.Client)
+    assert api.url.host == "default"
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=200, json="'ok'")
+    r = api._.servers()
+    request = httpx_mock.get_requests()[-1]
+    assert request.url.host == "default"
+
+    api._server_variables = {"host": "defined"}
+    r = api._.servers()
+    request = httpx_mock.get_requests()[-1]
+    assert request.url.host == "defined"
+
+    api._server_variables = {"host": "defoned"}
+    with pytest.raises(ValueError, match="Server Variable host value defoned not allowed"):
+        api._.servers()
+
+    api._server_variables = dict()
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=204)
+    r = api._.path()
+    request = httpx_mock.get_requests()[-1]
+    assert request.url.host == "example" and request.url.path == "/v1/defined"
+
+    httpx_mock.add_response(headers={"Content-Type": "application/json"}, status_code=200, json="'ok'")
+    r = api._.operation()
+    request = httpx_mock.get_requests()[-1]
+    assert request.url.host == "operation" and request.url.path == "/v3/defined"
+
+
+def test_paths_server_variables_missing(with_paths_server_variables):
+    dd = copy.deepcopy(with_paths_server_variables)
+    dd["servers"][0]["url"] = "https://{missing}/test"
+    with pytest.raises(ValueError, match=r"Missing Server Variables \[\'missing\'\]"):
+        OpenAPI("http://example/openapi.yaml", dd, session_factory=httpx.Client)
