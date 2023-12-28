@@ -35,6 +35,7 @@ if typing.TYPE_CHECKING:
         RequestData,
         RequestFiles,
         RequestContent,
+        RequestType,
         AuthTypes,
         SchemaType,
         ParameterType,
@@ -42,8 +43,10 @@ if typing.TYPE_CHECKING:
         OperationType,
         JSON,
         RootType,
+        ServerType,
         ResponseDataType,
         ResponseHeadersType,
+        HTTPMethodType,
     )
     from aiopenapi3 import OpenAPI
 
@@ -65,7 +68,7 @@ class RequestParameter:
 class RequestBase:
     class StreamResponse(NamedTuple):
         headers: Dict[str, str]
-        schema: "SchemaType"
+        schema: Optional["SchemaType"]
         session: httpx.Client
         result: httpx.Response
 
@@ -73,6 +76,10 @@ class RequestBase:
         headers: Dict[str, str]
         data: Any
         result: httpx.Response
+
+    class Vars(NamedTuple):
+        parameters: Dict[str, str]
+        data: Any
 
     """
     A Request compiles all required information to call an Operation
@@ -85,13 +92,53 @@ class RequestBase:
         - :meth:`~aiopenapi3.request.RequestBase.request`
     """
 
-    def __init__(self, api: "OpenAPI", method: str, path: str, operation: "OperationType"):
+    def __init__(
+        self,
+        api: "OpenAPI",
+        method: "HTTPMethodType",
+        path: str,
+        operation: "OperationType",
+        servers: Optional[List["ServerType"]],
+    ):
         self.api: "OpenAPI" = api
+        """
+        OpenAPI object
+        """
+
         self.root = api._root  # pylint: disable=W0212
-        self.method: str = method
+        """
+        API document root
+        """
+
+        self.method: "HTTPMethodType" = method
+        """
+        HTTP method
+        """
+
         self.path: str = path
+        """
+        HTTP path
+        """
+
+        self.vars: Optional["RequestBase.Vars"] = None
+        """
+        Parameter & Data
+        """
+
         self.operation: "OperationType" = operation
+        """
+        associated OpenAPI Operation
+        """
+
         self.req: RequestParameter = RequestParameter(self.path)
+        """
+        RequestParameter
+        """
+
+        self.servers: Optional[List["ServerType"]] = servers
+        """
+        Servers to use for this request
+        """
 
     def __call__(self, *args, return_headers: bool = False, **kwargs) -> Union["JSON", Tuple[Dict[str, str], "JSON"]]:
         """
@@ -147,9 +194,15 @@ class RequestBase:
         ...
 
     def _build_req(self, session: Union[httpx.Client, httpx.AsyncClient]) -> httpx.Request:
+        url: yarl.URL = self.api.url
+
+        if self.servers:
+            server: "ServerType" = self.api._server_select(self.servers)
+            url = self.api._base_url.join(yarl.URL(server.createUrl(self.api._server_variables)))
+
         req = session.build_request(
             self.method,
-            str(self.api.url / self.req.url[1:]),
+            str(url / self.req.url[1:]),
             headers=self.req.headers,
             cookies=self.req.cookies,
             params=self.req.params,
@@ -173,6 +226,7 @@ class RequestBase:
         :type parameters: dict{str: str}
         :return: headers, data, response
         """
+        self.vars = RequestBase.Vars(parameters, data)
         self._prepare(data, parameters)
         with closing(self.api._session_factory(**self._session_factory_default_args)) as session:
             result = self._send(session, data, parameters)
@@ -208,6 +262,7 @@ class RequestBase:
         :return: schema, session, response
         """
 
+        self.vars = RequestBase.Vars(parameters, data)
         self._prepare(data, parameters)
         session = self.api._session_factory(**self._session_factory_default_args)
         result = self._send(session, data, parameters)
@@ -259,6 +314,7 @@ class AsyncRequestBase(RequestBase):
     async def request(  # type: ignore[override]
         self, data: Optional["RequestData"] = None, parameters: Optional["RequestParameters"] = None
     ) -> "RequestBase.Response":
+        self.vars = RequestBase.Vars(parameters, data)
         self._prepare(data, parameters)
         async with aclosing(self.api._session_factory(**self._session_factory_default_args)) as session:
             result = await self._send(session, data, parameters)
@@ -276,6 +332,7 @@ class AsyncRequestBase(RequestBase):
     async def stream(  # type: ignore[override]
         self, data: Optional["RequestData"] = None, parameters: Optional["RequestParameters"] = None
     ) -> "AsyncRequestBase.StreamResponse":
+        self.vars = RequestBase.Vars(parameters, data)
         self._prepare(data, parameters)
         session = self.api._session_factory(**self._session_factory_default_args)
         result = await self._send(session, data, parameters)
@@ -287,11 +344,13 @@ class OperationIndex:
     class OperationTag:
         def __init__(self, oi: "OperationIndex") -> None:
             self._oi = oi
-            self._operations: Dict[str, Tuple[str, str, "OperationType"]] = dict()
+            self._operations: Dict[
+                str, Tuple["HTTPMethodType", str, "OperationType", Optional[List["ServerType"]]]
+            ] = dict()
 
         def __getattr__(self, item) -> RequestBase:
-            (method, path, op) = self._operations[item]
-            return self._oi._api._createRequest(self._oi._api, method, path, op)
+            (method, path, op, servers) = self._operations[item]
+            return self._oi._api._createRequest(self._oi._api, method, path, op, servers)
 
     class Iter:
         def __init__(self, spec: "OpenAPI", use_operation_tags: bool):
@@ -325,12 +384,15 @@ class OperationIndex:
         self._api: "OpenAPI" = api
         self._root: "RootType" = api._root
 
-        self._operations: Dict[str, Tuple[str, str, "OperationType"]] = dict()
+        self._operations: Dict[
+            str, Tuple[str, "HTTPMethodType", "OperationType", Optional[List["ServerType"]]]
+        ] = dict()
         self._tags: Dict[str, "OperationIndex.OperationTag"] = collections.defaultdict(
             lambda: OperationIndex.OperationTag(self)
         )
         for path, pi in self._root.paths.items():
             op: "OperationType"
+            pi: "PathItemType"
             if pi.ref:
                 pi = pi.ref._target
             for method in pi.model_fields_set & HTTP_METHODS:
@@ -338,7 +400,12 @@ class OperationIndex:
                 if op.operationId is None:
                     continue
                 operationId = op.operationId.replace(" ", "_")
-                item = (method, path, op)
+                # v20 does not have server
+                if hasattr(op, "servers"):
+                    servers = op.servers or pi.servers or None
+                else:
+                    servers = None
+                item = (method, path, op, servers)
                 if use_operation_tags and op.tags:
                     for tag in op.tags:
                         if (other := self._tags[tag]._operations.get(operationId, None)) is not None:
@@ -352,23 +419,32 @@ class OperationIndex:
         self._tags = dict(self._tags)
         self._use_operation_tags = use_operation_tags
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str) -> "RequestType":
+        """
+        the sad smiley interface
+
+        :param item: the operationId
+        :return:
+        """
         if self._use_operation_tags and item in self._tags:
             return self._tags[item]
         elif item in self._operations:
-            (method, path, op) = self._operations[item]
-            return self._api._createRequest(self._api, method, path, op)
+            (method, path, op, servers) = self._operations[item]
+            return self._api._createRequest(self._api, method, path, op, servers)
         else:
             raise KeyError(f"operationId {item} not found in tags or operations")
 
-    def __getitem__(self, item: Union[str, Tuple[str, str]]):
+    def __getitem__(self, item: Union[str, Tuple[str, "HTTPMethodType"]]) -> "RequestType":
         """
         index operator interface
         access operations by operationId or (path, method)
+
+        :param item: operationId or tuple of path & method
+        :return:
         """
         return getattr(self, item) if isinstance(item, str) else self._api.createRequest(item)
 
-    def __iter__(self):
+    def __iter__(self) -> "OpenationIndex.Iter":
         return self.Iter(self._root, self._use_operation_tags)
 
     def __getstate__(self):

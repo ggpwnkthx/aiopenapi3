@@ -91,7 +91,7 @@ class Request(RequestBase):
         return None
 
     def _prepare_security(self) -> None:
-        security = self.operation.security or self.api._root.security
+        security = self.operation.security if self.operation.security is not None else self.api._root.security
 
         if not security:
             return
@@ -282,9 +282,19 @@ class Request(RequestBase):
                     rbq.update(v.headers)
                 possible.update(rbq)
 
-        parameters = {
-            i.name: i.schema_.default for i in filter(lambda x: x.schema_.default is not None, possible.values())
-        }
+        parameters = {}
+
+        """collect default values"""
+        for i in possible.values():
+            if i.schema_ is not None and i.schema_.default is not None:
+                parameters[i.name] = i.schema_.default
+            elif (
+                i.content is not None
+                and (m := i.content.get("application/json", None)) is not None
+                and m.schema_.default
+            ):
+                parameters[i.name] = m.schema_.default
+
         parameters.update(provided)
 
         available = frozenset(parameters.keys())
@@ -327,6 +337,11 @@ class Request(RequestBase):
         assert isinstance(self.operation, (v30.Operation, v31.Operation))
 
         if not self.operation.requestBody:
+            ctx = self.api.plugins.message.sending(
+                request=self, operationId=self.operation.operationId, sending=None, headers=self.req.headers
+            )
+            self.req.content = ctx.sending
+            self.req.headers = ctx.headers
             return
 
         if data_ is None and self.operation.requestBody.required:
@@ -340,13 +355,13 @@ class Request(RequestBase):
             else:
                 raise TypeError(data_)
             data = self.api.plugins.message.marshalled(
-                operationId=self.operation.operationId, marshalled=data
+                request=self, operationId=self.operation.operationId, marshalled=data
             ).marshalled
             data: str = json.dumps(data)
             data: bytes = data.encode()  # type: ignore[union-attr]
             self.req.headers["Content-Type"] = "application/json"
             ctx = self.api.plugins.message.sending(
-                operationId=self.operation.operationId, sending=data, headers=self.req.headers
+                request=self, operationId=self.operation.operationId, sending=data, headers=self.req.headers
             )
             self.req.content = ctx.sending
             self.req.headers = ctx.headers
@@ -454,11 +469,12 @@ class Request(RequestBase):
             )
             available = frozenset(headers.keys())
             if missing := (required.keys() - available):
-                missing = {k: required[k] for k in missing}
-                raise HeadersMissingError(self.operation, missing, result)
+                missed = {k: required[k] for k in missing}
+                raise HeadersMissingError(self.operation, missed, result)
             for name, header in expected_response.headers.items():
                 data = headers.get(name, None)
                 if data:
+                    assert header.schema_ is not None
                     rheaders[name] = header.schema_.model(header._decode(data))
         return rheaders
 
@@ -467,7 +483,7 @@ class Request(RequestBase):
     ) -> Tuple[str, "v3xMediaTypeType"]:
         if content_type:
             content_type, _, encoding = content_type.partition(";")
-            expected_media: "v3xMediaTyeType" = expected_response.content.get(content_type, None)
+            expected_media: Optional["v3xMediaTypeType"] = expected_response.content.get(content_type, None)
             if expected_media is None and "/" in content_type:
                 # accept media type ranges in the spec. the most specific matching
                 # type should always be chosen, but if we do not have a match here
@@ -488,6 +504,7 @@ class Request(RequestBase):
                          (expected one of {options})",
                 result,
             )
+        assert content_type is not None
         return content_type, expected_media
 
     def _process_stream(self, result: httpx.Response) -> Tuple[Dict[str, str], Optional["SchemaType"]]:
@@ -510,6 +527,7 @@ class Request(RequestBase):
         content_type = result.headers.get("Content-Type", None)
 
         ctx = self.api.plugins.message.received(
+            request=self,
             operationId=self.operation.operationId,
             received=result.content,
             headers=result.headers,
@@ -537,6 +555,7 @@ class Request(RequestBase):
             except json.decoder.JSONDecodeError:
                 raise ResponseDecodingError(self.operation, result, data)
             data = self.api.plugins.message.parsed(
+                request=self,
                 operationId=self.operation.operationId,
                 parsed=data,
                 expected_type=getattr(expected_media.schema_, "_target", expected_media.schema_),
@@ -549,11 +568,9 @@ class Request(RequestBase):
                 data = expected_media.schema_.model(data)
             except pydantic.ValidationError as e:
                 raise ResponseSchemaError(self.operation, expected_media, expected_media.schema_, result, e)
-            except pydantic.errors.ConfigError as e1:
-                raise ResponseSchemaError(self.operation, expected_media, expected_media.schema_, result, e1)
 
             data = self.api.plugins.message.unmarshalled(
-                operationId=self.operation.operationId, unmarshalled=data
+                request=self, operationId=self.operation.operationId, unmarshalled=data
             ).unmarshalled
             return rheaders, data
         else:

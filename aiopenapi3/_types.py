@@ -1,15 +1,17 @@
-from . import v20, v30, v31
-
-from typing import TYPE_CHECKING, Dict, List, Sequence, Tuple, Union, TypeAlias, Type, Optional
+import re
+from typing import TYPE_CHECKING, Dict, List, Sequence, Tuple, Union, TypeAlias, Type, Optional, Literal
 
 import yaml
+
+from httpx._types import RequestContent, FileTypes, RequestFiles, AuthTypes  # noqa
+from pydantic import BaseModel
+
+
+from . import v20, v30, v31
 
 if TYPE_CHECKING:
     pass
 
-
-from httpx._types import RequestContent, FileTypes, RequestFiles, AuthTypes  # noqa
-from pydantic import BaseModel
 
 RequestFileParameter = Tuple[str, FileTypes]
 RequestFilesParameter = Sequence[RequestFileParameter]
@@ -25,8 +27,10 @@ RequestParameter = Union[str, BaseModel]
 RequestParameters = Dict[str, RequestParameter]
 
 RootType = Union[v20.Root, v30.Root, v31.Root]
+ServerType = Union[v30.Server, v31.Server]
 ReferenceType = Union[v20.Reference, v30.Reference, v31.Reference]
 SchemaType = Union[v20.Schema, v30.Schema, v31.Schema]
+v3xSchemaType = Union[v30.Schema, v31.Schema]
 DiscriminatorType = Union[v30.Discriminator, v31.Discriminator]
 PathItemType = Union[v20.PathItem, v30.PathItem, v31.PathItem]
 OperationType = Union[v20.Operation, v30.Operation, v31.Operation]
@@ -43,9 +47,14 @@ YAMLLoaderType = Union[Type[yaml.Loader], Type[yaml.CLoader], Type[yaml.SafeLoad
 
 PrimitiveTypes = Union[str, float, int, bool]
 
+HTTPMethodType = Literal["get", "put", "post", "delete", "options", "head", "patch", "trace"]
+HTTPMethodMatchType = Union[re.Pattern, HTTPMethodType]
+
 __all__: List[str] = [
     "RootType",
+    "ServerType",
     "SchemaType",
+    "v3xSchemaType",
     "DiscriminatorType",
     "PathItemType",
     "OperationType",
@@ -70,4 +79,6 @@ __all__: List[str] = [
     "JSON",
     "RequestFilesParameter",
     "RequestFileParameter",
+    "HTTPMethodType",
+    "HTTPMethodMatchType",
 ]

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from aiopenapi3 import OpenAPI
 
     import httpx
-    from .base import PathItemBase, SchemaBase
+    from .base import PathItemBase, SchemaBase, RequestBase
 
 """
 the plugin interface replicates the suds way of  dealing with broken data/schema information
@@ -51,11 +51,17 @@ class Init(Plugin):
         """available in :func:`~aiopenapi3.plugin.Init.initialized`"""
         schemas: Optional[Dict[str, "SchemaBase"]] = None
         """available in :func:`~aiopenapi3.plugin.Init.schemas`"""
+        resolved: Optional[List["SchemaBase"]] = None
+        """available in :func:`~aiopenapi3.plugin.Init.schemas`"""
         paths: Optional[Dict[str, "PathItemBase"]] = None
         """available in :func:`~aiopenapi3.plugin.Init.paths`"""
 
     def schemas(self, ctx: "Init.Context") -> "Init.Context":  # pragma: no cover
         """modify the Schema before creating Models"""
+        return ctx  # noqa
+
+    def resolved(self, ctx: "Init.Context") -> "Init.Context":  # pragma: no cover
+        """modify the resolved paths/PathItems before initializing the Operations"""
         return ctx  # noqa
 
     def paths(self, ctx: "Init.Context") -> "Init.Context":  # pragma: no cover
@@ -97,6 +103,10 @@ class Message(Plugin):
 
     @dataclasses.dataclass
     class Context:
+        request: "RequestBase"
+        """available :func:`~aiopenapi3.plugin.Message.marshalled` :func:`~aiopenapi3.plugin.Message.sending`
+        :func:`~aiopenapi3.plugin.Message.received` :func:`~aiopenapi3.plugin.Message.parsed`
+        :func:`~aiopenapi3.plugin.Message.unmarshalled`"""
         operationId: str
         """available :func:`~aiopenapi3.plugin.Message.marshalled` :func:`~aiopenapi3.plugin.Message.sending`
         :func:`~aiopenapi3.plugin.Message.received` :func:`~aiopenapi3.plugin.Message.parsed`
